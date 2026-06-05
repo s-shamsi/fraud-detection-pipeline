@@ -1,0 +1,45 @@
+# ── Core web framework ─────────────────────────────────────────────────────────
+fastapi==0.111.1
+uvicorn[standard]==0.29.0
+pydantic==2.7.3
+httpx==0.27.0                    # async HTTP client (for tests)
+
+# ── ML / model ──────────────────────────────────────────────────────────────────
+xgboost==2.0.3
+scikit-learn==1.5.0
+numpy==1.26.4
+pandas==2.2.2
+joblib==1.4.2
+
+# ── ONNX ────────────────────────────────────────────────────────────────────────
+onnxruntime==1.18.0
+onnxmltools==1.12.0              # XGBoost → ONNX conversion
+onnx==1.16.1
+
+# ── Feature store ───────────────────────────────────────────────────────────────
+feast==0.39.1
+redis==5.0.4
+redis[asyncio]==5.0.4            # async Redis client for FastAPI
+
+# ── Streaming / Kafka ────────────────────────────────────────────────────────────
+kafka-python==2.0.2              # Kafka producer/consumer
+
+# ── GCP SDKs ────────────────────────────────────────────────────────────────────
+google-cloud-pubsub==2.21.4      # Pub/Sub (replaces Kafka in prod)
+google-cloud-storage==2.16.0     # GCS (Feast offline store)
+google-cloud-bigquery==3.23.0    # BigQuery (offline store + prediction logs)
+google-cloud-monitoring==2.21.0  # Custom metrics for drift alerts
+
+# ── Monitoring ───────────────────────────────────────────────────────────────────
+evidently==0.4.30
+prometheus-client==0.20.0
+
+# ── Observability ────────────────────────────────────────────────────────────────
+structlog==24.2.0
+
+# ── Dev / test ───────────────────────────────────────────────────────────────────
+pytest==8.2.2
+pytest-asyncio==0.23.7
+pytest-cov==5.0.0
+python-dotenv==1.0.1
+pyarrow==16.1.0                  # Parquet read/write

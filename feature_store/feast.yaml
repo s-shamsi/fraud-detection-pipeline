@@ -1,0 +1,51 @@
+# ────────────────────────────────────────────────────────────────────────────
+# Feast Feature Store Configuration
+# ────────────────────────────────────────────────────────────────────────────
+# This file configures the Feast registry, online store, and offline store.
+# Two environments are provided:
+#   - LOCAL (default): Parquet offline + SQLite registry + Redis online
+#   - GCP PRODUCTION : BigQuery offline + GCS registry + GCP Memorystore Redis
+#
+# To switch environments, set the FEAST_ENV env variable:
+#   export FEAST_ENV=gcp
+# ────────────────────────────────────────────────────────────────────────────
+
+project: fraud_detection
+provider: local
+
+# ── Registry ─────────────────────────────────────────────────────────────────
+# LOCAL: SQLite file on disk
+registry: data/registry.db
+
+# GCP PRODUCTION: uncomment below and comment out `registry: data/registry.db`
+# registry:
+#   registry_store_type: GCSRegistryStore
+#   path: gs://${GCP_REGISTRY_BUCKET}/feast-registry/registry.db
+
+# ── Offline store ─────────────────────────────────────────────────────────────
+# LOCAL: Parquet files via DuckDB
+offline_store:
+  type: file
+
+# GCP PRODUCTION: BigQuery
+# offline_store:
+#   type: bigquery
+#   dataset: fraud_features       # BigQuery dataset name
+#   project: ${GCP_PROJECT_ID}
+
+# ── Online store ──────────────────────────────────────────────────────────────
+# LOCAL: Redis running in Docker (see docker-compose.yml)
+online_store:
+  type: redis
+  connection_string: "${REDIS_HOST:localhost}:${REDIS_PORT:6379}"
+
+# GCP PRODUCTION: GCP Memorystore (Redis)
+# online_store:
+#   type: redis
+#   connection_string: "${MEMORYSTORE_HOST}:6379"
+#   key_ttl_seconds: 7200
+
+# ── Entity DF timestamp column ────────────────────────────────────────────────
+flags:
+  alpha_features: true
+  on_demand_transforms: true

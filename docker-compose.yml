@@ -1,0 +1,237 @@
+# ────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml – Local Development Stack
+# ────────────────────────────────────────────────────────────────────────────
+# Services:
+#   redpanda      — Kafka-compatible broker (replaces Kafka for local dev)
+#   redis         — Feast online store (mirrors GCP Memorystore in prod)
+#   inference-api — FastAPI fraud scoring service (hot-reloads on code change)
+#   producer      — Simulates live transaction stream
+#   aggregator    — Computes rolling windows, writes to Redis
+#   drift-monitor — Evidently AI drift checks (runs on a schedule)
+#   prometheus    — Scrapes /metrics from the inference API
+#   grafana       — Dashboard for latency / throughput / drift metrics
+#
+# Usage:
+#   docker compose up -d                          # start everything
+#   docker compose up -d inference-api            # start only the API
+#   docker compose logs -f inference-api          # tail logs
+#   docker compose down -v                        # stop + remove volumes
+# ────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+networks:
+  fraud-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+  redpanda-data:
+
+x-common-env: &common-env
+  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  KAFKA_TOPIC: transactions
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  FEAST_REPO_PATH: /app/feature_store
+
+services:
+
+  # ── Redpanda (Kafka-compatible broker) ─────────────────────────────────────
+  redpanda:
+    image: redpandadata/redpanda:v24.1.1
+    container_name: fraud-redpanda
+    networks: [fraud-net]
+    ports:
+      - "9092:9092"       # Kafka API
+      - "9644:9644"       # Admin API
+      - "8081:8081"       # Schema Registry
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    command:
+      - redpanda start
+      - --smp 1
+      - --overprovisioned
+      - --node-id 0
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:9092
+      - --pandaproxy-addr 0.0.0.0:8082
+      - --advertise-pandaproxy-addr redpanda:8082
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Create the 'transactions' topic on startup
+  redpanda-init:
+    image: redpandadata/redpanda:v24.1.1
+    container_name: fraud-redpanda-init
+    networks: [fraud-net]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        rpk topic create transactions \
+          --brokers redpanda:9092 \
+          --partitions 8 \
+          --replicas 1 \
+          --config retention.ms=86400000
+        echo "Topic 'transactions' created"
+    restart: "no"
+
+  # ── Redis (Feast online store) ──────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: fraud-redis
+    networks: [fraud-net]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1
+        --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Inference API ───────────────────────────────────────────────────────────
+  inference-api:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    container_name: fraud-inference-api
+    networks: [fraud-net]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+      - ./data:/app/data
+      - ./inference:/app/inference       # hot-reload
+      - ./feature_store:/app/feature_store
+    environment:
+      <<: *common-env
+      PORT: "8080"
+      MODEL_VERSION: "1.0.0"
+      PREDICTION_LOG_DIR: /app/data/predictions
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Transaction producer ────────────────────────────────────────────────────
+  producer:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile    # reuse same base image
+    container_name: fraud-producer
+    networks: [fraud-net]
+    volumes:
+      - ./streaming:/app/streaming
+      - ./data:/app/data
+    environment:
+      <<: *common-env
+      TPS: "200"
+      DRIFT_MODE: "normal"
+    command: ["python", "streaming/producer.py"]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Streaming aggregator ────────────────────────────────────────────────────
+  aggregator:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    container_name: fraud-aggregator
+    networks: [fraud-net]
+    volumes:
+      - ./streaming:/app/streaming
+    environment:
+      <<: *common-env
+      KAFKA_GROUP_ID: "fraud-aggregator-v1"
+    command: ["python", "streaming/aggregator.py"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Drift monitor (runs every hour via cron) ────────────────────────────────
+  drift-monitor:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    container_name: fraud-drift-monitor
+    networks: [fraud-net]
+    volumes:
+      - ./monitoring:/app/monitoring
+      - ./data:/app/data
+    environment:
+      <<: *common-env
+    # Run drift check once immediately then hourly via shell loop
+    command:
+      - /bin/bash
+      - -c
+      - |
+        echo "Waiting 60s for predictions to accumulate …"
+        sleep 60
+        while true; do
+          echo "[$(date -u +%H:%M:%S)] Running drift check …"
+          python monitoring/drift_detector.py --window-hours 1 --report-html || true
+          sleep 3600
+        done
+    restart: unless-stopped
+
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: fraud-prometheus
+    networks: [fraud-net]
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    restart: unless-stopped
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: fraud-grafana
+    networks: [fraud-net]
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
