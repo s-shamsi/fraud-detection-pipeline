@@ -393,9 +393,9 @@ make test
 
 ---
 
-## Freelancer Pitch
+## Summary
 
-> *"I designed low-latency streaming pipelines that process thousands of events per second, utilising feature stores to catch fraud or personalise user experiences in real-time. This system serves fraud predictions in under 50 ms by combining ONNX-optimised models with a Redis-backed feature store, while Evidently AI monitors for data drift and triggers automated alerts when transaction patterns shift — simulating a coordinated fraud attack."*
+> *"This is a set of low-latency streaming pipelines that process thousands of events per second, utilising feature stores to catch fraud or personalise user experiences in real-time. This system serves fraud predictions in under 50 ms by combining ONNX-optimised models with a Redis-backed feature store, while Evidently AI monitors for data drift and triggers automated alerts when transaction patterns shift — simulating a coordinated fraud attack."*
 
 ---
 
